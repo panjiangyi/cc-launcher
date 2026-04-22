@@ -20,7 +20,7 @@ command_exists() {
 require_git_repo() {
   local repo_root
   if ! repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
-    die "Current directory is not inside a Git repository"
+    return 1
   fi
   printf '%s\n' "$repo_root"
 }
@@ -50,8 +50,8 @@ render_menu() {
   shift 3
   local options=("$@")
 
-  if (( MENU_RENDERED_LINES > 0 )); then
-    printf '\033[%dA\r\033[J' "$MENU_RENDERED_LINES" >&"$menu_fd"
+  if (( PROMPT_MENU_RENDERED_LINES > 0 )); then
+    printf '\033[%dA\r\033[J' "$PROMPT_MENU_RENDERED_LINES" >&"$menu_fd"
   fi
 
   printf '%s\n' "$title" >&"$menu_fd"
@@ -66,7 +66,29 @@ render_menu() {
   done
 
   printf '\nUse ↑/↓ to move, Enter to confirm, mouse wheel/click if supported\n' >&"$menu_fd"
-  MENU_RENDERED_LINES=$((${#options[@]} + 3))
+  PROMPT_MENU_RENDERED_LINES=$((${#options[@]} + 3))
+}
+
+PROMPT_MENU_FD=""
+PROMPT_MENU_RENDERED_LINES=0
+PROMPT_MENU_STTY_STATE=""
+
+cleanup_prompt_menu() {
+  local menu_fd="${PROMPT_MENU_FD:-}"
+  if [[ -n "$menu_fd" ]]; then
+    if (( PROMPT_MENU_RENDERED_LINES > 0 )); then
+      printf '\033[%dA\r\033[J' "$PROMPT_MENU_RENDERED_LINES" >&"$menu_fd" 2>/dev/null || true
+    fi
+    printf '\033[?1000l\033[?1006l\033[?25h' >&"$menu_fd" 2>/dev/null || true
+    if [[ -n "${PROMPT_MENU_STTY_STATE:-}" ]]; then
+      stty "$PROMPT_MENU_STTY_STATE" < /dev/tty 2>/dev/null || true
+    fi
+    eval "exec ${menu_fd}>&-"
+    eval "exec ${menu_fd}<&-"
+  fi
+  PROMPT_MENU_FD=""
+  PROMPT_MENU_RENDERED_LINES=0
+  PROMPT_MENU_STTY_STATE=""
 }
 
 menu_move_up() {
@@ -111,7 +133,11 @@ prompt_menu() {
 
   local menu_fd
   exec {menu_fd}<>/dev/tty
-  local MENU_RENDERED_LINES=0
+  PROMPT_MENU_FD="$menu_fd"
+  PROMPT_MENU_RENDERED_LINES=0
+  PROMPT_MENU_STTY_STATE="$(stty -g < /dev/tty 2>/dev/null || true)"
+  trap 'cleanup_prompt_menu; exit 130' INT TERM
+  trap 'cleanup_prompt_menu' EXIT
 
   local cursor_response=""
   local menu_row=1
@@ -136,22 +162,14 @@ prompt_menu() {
 
     case "$key" in
       "")
-        if (( MENU_RENDERED_LINES > 0 )); then
-          printf '\033[%dA\r\033[J' "$MENU_RENDERED_LINES" >&"$menu_fd"
-        fi
-        printf '\033[?1000l\033[?1006l\033[?25h' >&"$menu_fd"
-        exec {menu_fd}>&-
-        exec {menu_fd}<&-
+        cleanup_prompt_menu
+        trap - INT TERM EXIT
         printf '%s\n' "$selected"
         return 0
         ;;
       $'\n'|$'\r')
-        if (( MENU_RENDERED_LINES > 0 )); then
-          printf '\033[%dA\r\033[J' "$MENU_RENDERED_LINES" >&"$menu_fd"
-        fi
-        printf '\033[?1000l\033[?1006l\033[?25h' >&"$menu_fd"
-        exec {menu_fd}>&-
-        exec {menu_fd}<&-
+        cleanup_prompt_menu
+        trap - INT TERM EXIT
         printf '%s\n' "$selected"
         return 0
         ;;
@@ -203,12 +221,8 @@ prompt_menu() {
                 if (( option_row >= 1 && option_row <= count )); then
                   selected="$option_row"
                   if [[ "$mouse_suffix" == "M" ]]; then
-                    if (( MENU_RENDERED_LINES > 0 )); then
-                      printf '\033[%dA\r\033[J' "$MENU_RENDERED_LINES" >&"$menu_fd"
-                    fi
-                    printf '\033[?1000l\033[?1006l\033[?25h' >&"$menu_fd"
-                    exec {menu_fd}>&-
-                    exec {menu_fd}<&-
+                    cleanup_prompt_menu
+                    trap - INT TERM EXIT
                     printf '%s\n' "$selected"
                     return 0
                   fi
@@ -221,12 +235,8 @@ prompt_menu() {
     esac
   done
 
-  if (( MENU_RENDERED_LINES > 0 )); then
-    printf '\033[%dA\r\033[J' "$MENU_RENDERED_LINES" >&"$menu_fd"
-  fi
-  printf '\033[?1000l\033[?1006l\033[?25h' >&"$menu_fd"
-  exec {menu_fd}>&-
-  exec {menu_fd}<&-
+  cleanup_prompt_menu
+  trap - INT TERM EXIT
   return 1
 }
 
@@ -243,7 +253,9 @@ ensure_repo_context() {
     return 0
   fi
 
-  repo_root="$(require_git_repo)"
+  if ! repo_root="$(require_git_repo)"; then
+    die "Current directory is not inside a Git repository"
+  fi
   repo_name="$(basename "$repo_root")"
 
   local git_username
