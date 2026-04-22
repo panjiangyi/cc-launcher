@@ -338,7 +338,7 @@ create_new_task() {
     local base_branch launch_tool
     base_branch="$(choose_base_branch)" || return 1
 
-    if ! git worktree add -b "$branch_name" "$worktree_path" "$base_branch"; then
+    if ! git worktree add -b "$branch_name" "$worktree_path" "$base_branch" >&2; then
       die "创建 worktree 失败"
     fi
 
@@ -451,10 +451,10 @@ delete_worktree() {
     die "目标分支尚未合并到 dev，拒绝删除"
   fi
 
-  if ! git worktree remove "$target_path"; then
+  if ! git worktree remove "$target_path" >&2; then
     die "删除 worktree 失败"
   fi
-  if ! git branch -d "$target_branch"; then
+  if ! git branch -d "$target_branch" >&2; then
     die "删除 branch 失败"
   fi
 
