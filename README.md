@@ -4,6 +4,20 @@ Git worktree 任务启动器。提供一个统一的 `ccl` 入口，用于创建
 
 ## 安装
 
+Zsh 一键安装：
+
+```bash
+npm install -g cc-launch && echo 'eval "$(command ccl init zsh)"' >> ~/.zshrc && source ~/.zshrc
+```
+
+Bash 一键安装：
+
+```bash
+npm install -g cc-launch && echo 'eval "$(command ccl init bash)"' >> ~/.bashrc && source ~/.bashrc
+```
+
+分步安装：
+
 ```bash
 npm install -g cc-launch
 ```
