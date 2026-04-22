@@ -24,13 +24,13 @@ ccl() {
       if command -v "$launch_tool" >/dev/null 2>&1; then
         "$launch_tool"
       else
-        printf '%s 命令不存在于 PATH 中，已停留在目标目录：%s\n' "$launch_tool" "$PWD" >&2
+        printf '%s is not available in PATH. Staying in target directory: %s\n' "$launch_tool" "$PWD" >&2
       fi
       ;;
     none|"")
       ;;
     *)
-      printf '未知启动工具：%s\n' "$launch_tool" >&2
+      printf 'Unknown launch tool: %s\n' "$launch_tool" >&2
       return 1
       ;;
   esac

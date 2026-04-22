@@ -20,7 +20,7 @@ command_exists() {
 require_git_repo() {
   local repo_root
   if ! repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
-    die "当前目录不在 Git 仓库中"
+    die "Current directory is not inside a Git repository"
   fi
   printf '%s\n' "$repo_root"
 }
@@ -50,7 +50,10 @@ render_menu() {
   shift 3
   local options=("$@")
 
-  printf '\033[u\033[J' >&"$menu_fd"
+  if (( MENU_RENDERED_LINES > 0 )); then
+    printf '\033[%dA\r\033[J' "$MENU_RENDERED_LINES" >&"$menu_fd"
+  fi
+
   printf '%s\n' "$title" >&"$menu_fd"
 
   local i
@@ -62,7 +65,8 @@ render_menu() {
     fi
   done
 
-  printf '\n↑/↓ 选择，Enter 确认，鼠标滚轮/点击可选\n' >&"$menu_fd"
+  printf '\nUse ↑/↓ to move, Enter to confirm, mouse wheel/click if supported\n' >&"$menu_fd"
+  MENU_RENDERED_LINES=$((${#options[@]} + 3))
 }
 
 menu_move_up() {
@@ -102,11 +106,12 @@ prompt_menu() {
   fi
 
   if [[ ! -t 2 ]] || [[ ! -r /dev/tty ]] || [[ ! -w /dev/tty ]]; then
-    die "当前环境不支持交互式菜单（需要可用 TTY）"
+    die "Interactive menus require a usable TTY"
   fi
 
   local menu_fd
   exec {menu_fd}<>/dev/tty
+  local MENU_RENDERED_LINES=0
 
   local cursor_response=""
   local menu_row=1
@@ -122,7 +127,7 @@ prompt_menu() {
     fi
   fi
 
-  printf '\033[s\033[?25l\033[?1000h\033[?1006h' >&"$menu_fd"
+  printf '\033[?25l\033[?1000h\033[?1006h' >&"$menu_fd"
 
   local key next next2 mouse_data mouse_suffix mouse_button mouse_x mouse_y option_row
   while true; do
@@ -131,14 +136,20 @@ prompt_menu() {
 
     case "$key" in
       "")
-        printf '\033[u\033[J\033[?1000l\033[?1006l\033[?25h' >&"$menu_fd"
+        if (( MENU_RENDERED_LINES > 0 )); then
+          printf '\033[%dA\r\033[J' "$MENU_RENDERED_LINES" >&"$menu_fd"
+        fi
+        printf '\033[?1000l\033[?1006l\033[?25h' >&"$menu_fd"
         exec {menu_fd}>&-
         exec {menu_fd}<&-
         printf '%s\n' "$selected"
         return 0
         ;;
       $'\n'|$'\r')
-        printf '\033[u\033[J\033[?1000l\033[?1006l\033[?25h' >&"$menu_fd"
+        if (( MENU_RENDERED_LINES > 0 )); then
+          printf '\033[%dA\r\033[J' "$MENU_RENDERED_LINES" >&"$menu_fd"
+        fi
+        printf '\033[?1000l\033[?1006l\033[?25h' >&"$menu_fd"
         exec {menu_fd}>&-
         exec {menu_fd}<&-
         printf '%s\n' "$selected"
@@ -192,7 +203,10 @@ prompt_menu() {
                 if (( option_row >= 1 && option_row <= count )); then
                   selected="$option_row"
                   if [[ "$mouse_suffix" == "M" ]]; then
-                    printf '\033[u\033[J\033[?1000l\033[?1006l\033[?25h' >&"$menu_fd"
+                    if (( MENU_RENDERED_LINES > 0 )); then
+                      printf '\033[%dA\r\033[J' "$MENU_RENDERED_LINES" >&"$menu_fd"
+                    fi
+                    printf '\033[?1000l\033[?1006l\033[?25h' >&"$menu_fd"
                     exec {menu_fd}>&-
                     exec {menu_fd}<&-
                     printf '%s\n' "$selected"
@@ -207,7 +221,10 @@ prompt_menu() {
     esac
   done
 
-  printf '\033[u\033[J\033[?1000l\033[?1006l\033[?25h' >&"$menu_fd"
+  if (( MENU_RENDERED_LINES > 0 )); then
+    printf '\033[%dA\r\033[J' "$MENU_RENDERED_LINES" >&"$menu_fd"
+  fi
+  printf '\033[?1000l\033[?1006l\033[?25h' >&"$menu_fd"
   exec {menu_fd}>&-
   exec {menu_fd}<&-
   return 1
@@ -232,7 +249,7 @@ ensure_repo_context() {
   local git_username
   git_username="$(git config user.name 2>/dev/null || true)"
   if [[ -z "$git_username" ]]; then
-    die "未设置 git user.name，请先运行: git config --global user.name 'Your Name'"
+    die "git user.name is not configured. Run: git config --global user.name 'Your Name'"
   fi
 
   username="$(slugify "$git_username")"
@@ -307,7 +324,7 @@ build_main_branch_candidates() {
     fi
   done
 
-  MAIN_BRANCH_LABELS+=("手动输入其他分支")
+  MAIN_BRANCH_LABELS+=("Enter another branch manually")
   MAIN_BRANCH_POINTS+=("__manual__")
 }
 
@@ -326,14 +343,14 @@ choose_configured_main_branch() {
 
   while true; do
     local choice
-    choice="$(prompt_menu "首次运行：请选择这个仓库的主分支:" "$default_index" "${MAIN_BRANCH_LABELS[@]}")" || return 1
+    choice="$(prompt_menu "First run: choose the main branch for this repository:" "$default_index" "${MAIN_BRANCH_LABELS[@]}")" || return 1
 
     local selected="${MAIN_BRANCH_POINTS[choice-1]}"
     if [[ "$selected" == "__manual__" ]]; then
       local manual_branch
-      manual_branch="$(prompt_line '请输入主分支名: ')" || return 1
+      manual_branch="$(prompt_line 'Enter the main branch name: ')" || return 1
       if [[ -z "$manual_branch" ]]; then
-        warn "主分支不能为空"
+        warn "Main branch cannot be empty"
         continue
       fi
       if git rev-parse --verify --quiet "$manual_branch^{commit}" >/dev/null; then
@@ -344,7 +361,7 @@ choose_configured_main_branch() {
         printf 'origin/%s\n' "$manual_branch"
         return 0
       fi
-      warn "主分支不存在，请重新选择"
+      warn "Main branch does not exist. Choose again."
       continue
     fi
 
@@ -363,8 +380,8 @@ ensure_project_config() {
 
   main_branch="$(choose_configured_main_branch)" || return 1
   save_project_config
-  warn "已保存项目配置: $config_path"
-  warn "主分支: $main_branch"
+  warn "Saved project config: $config_path"
+  warn "Main branch: $main_branch"
 }
 
 run_setup_script() {
@@ -372,18 +389,18 @@ run_setup_script() {
   local setup_script="$worktree_repo_dir/setup.sh"
 
   if [[ ! -f "$setup_script" ]]; then
-    warn "提示: 未找到 setup 脚本 ($setup_script)，跳过"
+    warn "Note: setup script not found ($setup_script), skipping"
     return 0
   fi
 
-  warn "正在运行 setup 脚本..."
+  warn "Running setup script..."
   local setup_rc=0
   (cd "$worktree_path" && bash "$setup_script") || setup_rc=$?
 
   if [[ $setup_rc -ne 0 ]]; then
-    warn "setup 脚本执行失败 (退出码: $setup_rc)，但 worktree 已保留"
+    warn "Setup script failed (exit code: $setup_rc), but the worktree was kept"
   else
-    warn "setup 脚本执行成功"
+    warn "Setup script completed successfully"
   fi
   return 0
 }
@@ -407,7 +424,7 @@ set -euo pipefail
 #   cp .env.example .env
 #   docker compose up -d
 SETUP_TEMPLATE
-    warn "已创建 setup 脚本模板: $setup_script"
+    warn "Created setup script template: $setup_script"
   fi
 
   local editor
@@ -420,7 +437,7 @@ SETUP_TEMPLATE
   elif command_exists nano; then
     editor=nano
   else
-    die "未找到可用的编辑器 (已检查 \$EDITOR, vim, vi, nano)"
+    die "No editor found (checked \$EDITOR, vim, vi, nano)"
   fi
 
   "$editor" "$setup_script" < /dev/tty > /dev/tty
@@ -484,7 +501,7 @@ build_base_candidates() {
     fi
   done
 
-  BASE_LABELS+=("手动输入其他分支")
+  BASE_LABELS+=("Enter another branch manually")
   BASE_POINTS+=("__manual__")
 }
 
@@ -503,14 +520,14 @@ choose_base_branch() {
     done
 
     local choice
-    choice="$(prompt_menu "请选择基于哪个分支创建（默认主分支，直接回车确认）:" "$default_index" "${BASE_LABELS[@]}")" || return 1
+    choice="$(prompt_menu "Choose the base branch for the new task (default: main branch, press Enter to confirm):" "$default_index" "${BASE_LABELS[@]}")" || return 1
 
     local selected="${BASE_POINTS[choice-1]}"
     if [[ "$selected" == "__manual__" ]]; then
       local manual_branch
-      manual_branch="$(prompt_line '请输入基线分支名: ')" || return 1
+      manual_branch="$(prompt_line 'Enter the base branch name: ')" || return 1
       if [[ -z "$manual_branch" ]]; then
-        warn "基线分支不能为空"
+        warn "Base branch cannot be empty"
         continue
       fi
       if git rev-parse --verify --quiet "$manual_branch^{commit}" >/dev/null; then
@@ -521,7 +538,7 @@ choose_base_branch() {
         printf 'origin/%s\n' "$manual_branch"
         return 0
       fi
-      warn "基线分支不存在，请重新选择"
+      warn "Base branch does not exist. Choose again."
       continue
     fi
 
@@ -532,7 +549,7 @@ choose_base_branch() {
 
 choose_launch_tool() {
   local choice
-  choice="$(prompt_menu "请选择启动工具:" 1 "codex" "claude" "none")" || return 1
+  choice="$(prompt_menu "Choose a launch tool:" 1 "codex" "claude" "none")" || return 1
   case "$choice" in
     1) printf 'codex\n' ;;
     2) printf 'claude\n' ;;
@@ -585,10 +602,10 @@ create_new_task() {
 
   while true; do
     local task_name slug branch_name dir_name worktree_path
-    task_name="$(prompt_line '请输入任务名称（建议英文，会自动转换为安全 slug）: ')" || return 1
+    task_name="$(prompt_line 'Enter a task name (English preferred; it will be converted to a safe slug): ')" || return 1
     slug="$(slugify "$task_name")"
     if [[ -z "$slug" ]]; then
-      warn "任务名转换后的 slug 为空，请重新输入"
+      warn "The generated slug is empty. Enter another task name."
       continue
     fi
 
@@ -600,15 +617,15 @@ create_new_task() {
     printf 'Path: %s\n' "$worktree_path" >&2
 
     if git_branch_exists_local "$branch_name"; then
-      warn "本地已存在同名 branch，请重新输入任务名"
+      warn "A local branch with the same name already exists. Enter another task name."
       continue
     fi
     if [[ -e "$worktree_path" ]]; then
-      warn "目标 worktree 目录已存在，请重新输入任务名"
+      warn "The target worktree directory already exists. Enter another task name."
       continue
     fi
     if branch_in_use_by_worktree "$branch_name"; then
-      warn "已有 worktree 使用该 branch，请重新输入任务名"
+      warn "Another worktree is already using that branch. Enter another task name."
       continue
     fi
 
@@ -616,7 +633,7 @@ create_new_task() {
     base_branch="$(choose_base_branch)" || return 1
 
     if ! git worktree add -b "$branch_name" "$worktree_path" "$base_branch" >&2; then
-      die "创建 worktree 失败"
+      die "Failed to create worktree"
     fi
 
     run_setup_script "$worktree_path"
@@ -630,7 +647,7 @@ create_new_task() {
 continue_worktree() {
   collect_worktrees
   if [[ "${#WT_PATHS[@]}" -eq 0 ]]; then
-    die "当前仓库没有可用 worktree"
+    die "No worktrees available in the current repository"
   fi
 
   local menu_options=()
@@ -644,7 +661,7 @@ continue_worktree() {
   done
 
   local choice
-  choice="$(prompt_menu "请选择要继续的 worktree:" 1 "${menu_options[@]}")" || return 1
+  choice="$(prompt_menu "Choose a worktree to continue:" 1 "${menu_options[@]}")" || return 1
   local launch_tool
   launch_tool="$(choose_launch_tool)" || return 1
   print_result "${WT_PATHS[choice-1]}" "$launch_tool"
@@ -687,12 +704,12 @@ list_deletable_worktrees() {
 
 delete_worktree() {
   if ! git rev-parse --verify --quiet "$main_branch^{commit}" >/dev/null; then
-    die "主分支不存在，无法判断是否已合并: $main_branch"
+    die "Main branch does not exist, cannot determine merge status: $main_branch"
   fi
 
   list_deletable_worktrees
   if [[ "${#DELETE_PATHS[@]}" -eq 0 ]]; then
-    die "没有可删除的已合并 worktree"
+    die "No merged worktrees are available for deletion"
   fi
 
   local menu_options=()
@@ -702,49 +719,49 @@ delete_worktree() {
   done
 
   local choice
-  choice="$(prompt_menu "请选择要删除的 worktree:" 1 "${menu_options[@]}")" || return 1
+  choice="$(prompt_menu "Choose a worktree to delete:" 1 "${menu_options[@]}")" || return 1
 
   local target_path="${DELETE_PATHS[choice-1]}"
   local target_branch="${DELETE_BRANCHES[choice-1]}"
 
   if [[ ! -d "$target_path" ]]; then
-    die "目标路径不存在：$target_path"
+    die "Target path does not exist: $target_path"
   fi
   if ! is_clean_worktree "$target_path"; then
-    die "目标 worktree 有未提交改动，拒绝删除"
+    die "Target worktree has uncommitted changes; refusing to delete"
   fi
   if ! branch_merged_into_main_branch "$target_branch"; then
-    die "目标分支尚未合并到主分支 $main_branch，拒绝删除"
+    die "Target branch has not been merged into main branch $main_branch; refusing to delete"
   fi
 
   if ! git worktree remove "$target_path" >&2; then
-    die "删除 worktree 失败"
+    die "Failed to delete worktree"
   fi
   if ! git branch -d "$target_branch" >&2; then
-    die "删除 branch 失败"
+    die "Failed to delete branch"
   fi
 
-  printf '已删除: %s (%s)\n' "$target_branch" "$target_path" >&2
+  printf 'Deleted: %s (%s)\n' "$target_branch" "$target_path" >&2
 }
 
 show_help() {
   cat >&2 << 'EOF'
-用法: ccl [命令]
+Usage: ccl [command]
 
-命令:
-  setup    创建或编辑项目级 setup 脚本
-  init     输出 shell 集成脚本（支持 zsh/bash）
-  help     显示此帮助信息
+Commands:
+  setup    Create or edit the project-level setup script
+  init     Print shell integration script (supports zsh/bash)
+  help     Show this help message
 
-无参数运行时进入交互模式:
-  - 新任务
-  - 继续已有 worktree
-  - 删除已合并的 worktree
-  - 编辑 setup 脚本
+Run without arguments to open the interactive menu:
+  - New task
+  - Continue an existing worktree
+  - Delete a merged worktree
+  - Edit setup script
 
-setup 脚本位于 ~/.worktrees/<repo-name>/setup.sh
-项目配置位于 ~/.worktrees/<repo-name>/config.json
-创建新 worktree 后自动执行 setup.sh；首次运行会询问主分支并写入 config.json。
+The setup script lives at ~/.worktrees/<repo-name>/setup.sh
+Project config lives at ~/.worktrees/<repo-name>/config.json
+setup.sh runs automatically after creating a new worktree; on first run the tool asks for the main branch and writes config.json.
 EOF
 }
 
@@ -753,7 +770,7 @@ print_shell_init() {
   case "$shell_name" in
     zsh|bash) ;;
     *)
-      die "init 仅支持 zsh 或 bash"
+      die "init only supports zsh or bash"
       ;;
   esac
 
@@ -777,13 +794,13 @@ ccl() {
       if command -v "$launch_tool" >/dev/null 2>&1; then
         "$launch_tool"
       else
-        printf '%s 命令不存在于 PATH 中，已停留在目标目录：%s\n' "$launch_tool" "$PWD" >&2
+        printf '%s is not available in PATH. Staying in target directory: %s\n' "$launch_tool" "$PWD" >&2
       fi
       ;;
     none|"")
       ;;
     *)
-      printf '未知启动工具：%s\n' "$launch_tool" >&2
+      printf 'Unknown launch tool: %s\n' "$launch_tool" >&2
       return 1
       ;;
   esac
@@ -799,11 +816,11 @@ main() {
         edit_setup_script
         ;;
       init)
-        [[ $# -eq 2 ]] || die "用法: ccl init <zsh|bash>"
+        [[ $# -eq 2 ]] || die "Usage: ccl init <zsh|bash>"
         print_shell_init "$2"
         ;;
       -h|--help|help) show_help ;;
-      *) die "未知命令: $1" ;;
+      *) die "Unknown command: $1" ;;
     esac
     return 0
   fi
@@ -811,14 +828,14 @@ main() {
   ensure_project_config || exit 1
 
   local choice
-  choice="$(prompt_menu "请选择操作:" 1 "新任务" "继续已有 worktree" "删除已合并的 worktree" "编辑 setup 脚本")" || exit 1
+  choice="$(prompt_menu "Choose an action:" 1 "New task" "Continue an existing worktree" "Delete a merged worktree" "Edit setup script")" || exit 1
 
   case "$choice" in
     1) create_new_task ;;
     2) continue_worktree ;;
     3) delete_worktree ;;
     4) edit_setup_script ;;
-    *) die "未知操作" ;;
+    *) die "Unknown action" ;;
   esac
 }
 
