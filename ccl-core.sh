@@ -43,27 +43,174 @@ prompt_line() {
   printf '%s\n' "$value"
 }
 
+render_menu() {
+  local menu_fd="$1"
+  local title="$2"
+  local selected="$3"
+  shift 3
+  local options=("$@")
+
+  printf '\033[u\033[J' >&"$menu_fd"
+  printf '%s\n' "$title" >&"$menu_fd"
+
+  local i
+  for i in "${!options[@]}"; do
+    if (( i + 1 == selected )); then
+      printf '\033[7m> %s\033[0m\n' "${options[$i]}" >&"$menu_fd"
+    else
+      printf '  %s\n' "${options[$i]}" >&"$menu_fd"
+    fi
+  done
+
+  printf '\n↑/↓ 选择，Enter 确认，鼠标滚轮/点击可选\n' >&"$menu_fd"
+}
+
+menu_move_up() {
+  local selected="$1"
+  local count="$2"
+  if (( selected <= 1 )); then
+    printf '%s\n' "$count"
+  else
+    printf '%s\n' "$((selected - 1))"
+  fi
+}
+
+menu_move_down() {
+  local selected="$1"
+  local count="$2"
+  if (( selected >= count )); then
+    printf '1\n'
+  else
+    printf '%s\n' "$((selected + 1))"
+  fi
+}
+
 prompt_menu() {
   local title="$1"
-  shift
+  local default_index="$2"
+  shift 2
   local options=("$@")
   local count="${#options[@]}"
-  local choice
+  local selected="$default_index"
 
-  while true; do
-    printf '%s\n' "$title" >&2
-    local i=1
-    for option in "${options[@]}"; do
-      printf '%d) %s\n' "$i" "$option" >&2
-      i=$((i + 1))
-    done
-    choice="$(prompt_line '> ')" || return 1
-    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= count )); then
-      printf '%s\n' "$choice"
-      return 0
+  if (( count == 0 )); then
+    return 1
+  fi
+
+  if (( selected < 1 || selected > count )); then
+    selected=1
+  fi
+
+  if [[ ! -t 2 ]] || [[ ! -r /dev/tty ]] || [[ ! -w /dev/tty ]]; then
+    die "当前环境不支持交互式菜单（需要可用 TTY）"
+  fi
+
+  local menu_fd
+  exec {menu_fd}<>/dev/tty
+
+  local cursor_response=""
+  local menu_row=1
+  local has_cursor_position=0
+  printf '\033[6n' >&"$menu_fd"
+  if IFS= read -rsdR -t 0.1 -u "$menu_fd" cursor_response; then
+    cursor_response="${cursor_response#*[}"
+    menu_row="${cursor_response%%;*}"
+    if [[ ! "$menu_row" =~ ^[0-9]+$ ]]; then
+      menu_row=1
+    else
+      has_cursor_position=1
     fi
-    warn "请输入有效序号"
+  fi
+
+  printf '\033[s\033[?25l\033[?1000h\033[?1006h' >&"$menu_fd"
+
+  local key next next2 mouse_data mouse_suffix mouse_button mouse_x mouse_y option_row
+  while true; do
+    render_menu "$menu_fd" "$title" "$selected" "${options[@]}"
+    IFS= read -rsn1 -u "$menu_fd" key || break
+
+    case "$key" in
+      "")
+        printf '\033[u\033[J\033[?1000l\033[?1006l\033[?25h' >&"$menu_fd"
+        exec {menu_fd}>&-
+        exec {menu_fd}<&-
+        printf '%s\n' "$selected"
+        return 0
+        ;;
+      $'\n'|$'\r')
+        printf '\033[u\033[J\033[?1000l\033[?1006l\033[?25h' >&"$menu_fd"
+        exec {menu_fd}>&-
+        exec {menu_fd}<&-
+        printf '%s\n' "$selected"
+        return 0
+        ;;
+      k)
+        selected="$(menu_move_up "$selected" "$count")"
+        ;;
+      j)
+        selected="$(menu_move_down "$selected" "$count")"
+        ;;
+      $'\x1b')
+        next=""
+        next2=""
+        IFS= read -rsn1 -t 0.05 -u "$menu_fd" next || true
+        if [[ "$next" != "[" ]]; then
+          continue
+        fi
+
+        IFS= read -rsn1 -t 0.05 -u "$menu_fd" next2 || true
+        case "$next2" in
+          A)
+            selected="$(menu_move_up "$selected" "$count")"
+            ;;
+          B)
+            selected="$(menu_move_down "$selected" "$count")"
+            ;;
+          '<')
+            mouse_data=""
+            while IFS= read -rsn1 -t 0.05 -u "$menu_fd" next; do
+              mouse_data+="$next"
+              if [[ "$next" == "M" || "$next" == "m" ]]; then
+                break
+              fi
+            done
+
+            mouse_suffix="${mouse_data: -1}"
+            mouse_data="${mouse_data%?}"
+            IFS=';' read -r mouse_button mouse_x mouse_y <<< "$mouse_data"
+
+            case "$mouse_button" in
+              64)
+                selected="$(menu_move_up "$selected" "$count")"
+                ;;
+              65)
+                selected="$(menu_move_down "$selected" "$count")"
+                ;;
+              0)
+                (( has_cursor_position == 1 )) || continue
+                option_row="$((mouse_y - menu_row))"
+                if (( option_row >= 1 && option_row <= count )); then
+                  selected="$option_row"
+                  if [[ "$mouse_suffix" == "M" ]]; then
+                    printf '\033[u\033[J\033[?1000l\033[?1006l\033[?25h' >&"$menu_fd"
+                    exec {menu_fd}>&-
+                    exec {menu_fd}<&-
+                    printf '%s\n' "$selected"
+                    return 0
+                  fi
+                fi
+                ;;
+            esac
+            ;;
+        esac
+        ;;
+    esac
   done
+
+  printf '\033[u\033[J\033[?1000l\033[?1006l\033[?25h' >&"$menu_fd"
+  exec {menu_fd}>&-
+  exec {menu_fd}<&-
+  return 1
 }
 
 repo_root="$(require_git_repo)"
@@ -74,9 +221,132 @@ if [[ -z "$_git_username" ]]; then
 fi
 username="$(slugify "$_git_username")"
 worktree_repo_dir="$HOME/.worktrees/$repo_name"
+config_path="$worktree_repo_dir/config.json"
+main_branch=""
 
 ensure_worktree_repo_dir() {
   mkdir -p "$worktree_repo_dir"
+}
+
+json_escape() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//$'\n'/\\n}"
+  printf '%s\n' "$value"
+}
+
+load_project_config() {
+  main_branch=""
+  [[ -f "$config_path" ]] || return 0
+
+  local raw_branch
+  raw_branch="$(sed -nE 's/.*"mainBranch"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' "$config_path" | head -n 1)"
+  if [[ -n "$raw_branch" ]]; then
+    main_branch="${raw_branch//\\\"/\"}"
+    main_branch="${main_branch//\\\\/\\}"
+  fi
+}
+
+save_project_config() {
+  ensure_worktree_repo_dir
+
+  local escaped_branch
+  escaped_branch="$(json_escape "$main_branch")"
+
+  cat > "$config_path" <<EOF
+{
+  "mainBranch": "$escaped_branch"
+}
+EOF
+}
+
+build_main_branch_candidates() {
+  local current_branch
+  current_branch="$(git branch --show-current 2>/dev/null || true)"
+  local raw_candidates=()
+
+  if [[ -n "$current_branch" ]]; then
+    raw_candidates+=("$current_branch")
+  fi
+  raw_candidates+=("main" "master" "dev")
+
+  local candidate
+  local seen='|'
+  MAIN_BRANCH_LABELS=()
+  MAIN_BRANCH_POINTS=()
+
+  for candidate in "${raw_candidates[@]}"; do
+    [[ -z "$candidate" ]] && continue
+    [[ "$seen" == *"|$candidate|"* ]] && continue
+    seen+="$candidate|"
+    if git show-ref --verify --quiet "refs/heads/$candidate"; then
+      MAIN_BRANCH_LABELS+=("$candidate")
+      MAIN_BRANCH_POINTS+=("$candidate")
+    elif git show-ref --verify --quiet "refs/remotes/origin/$candidate"; then
+      MAIN_BRANCH_LABELS+=("origin/$candidate")
+      MAIN_BRANCH_POINTS+=("origin/$candidate")
+    fi
+  done
+
+  MAIN_BRANCH_LABELS+=("手动输入其他分支")
+  MAIN_BRANCH_POINTS+=("__manual__")
+}
+
+choose_configured_main_branch() {
+  build_main_branch_candidates
+
+  local default_index=1
+  local i=0
+  for label in "${MAIN_BRANCH_LABELS[@]}"; do
+    i=$((i + 1))
+    if [[ "$label" == "main" || "$label" == "origin/main" ]]; then
+      default_index="$i"
+      break
+    fi
+  done
+
+  while true; do
+    local choice
+    choice="$(prompt_menu "首次运行：请选择这个仓库的主分支:" "$default_index" "${MAIN_BRANCH_LABELS[@]}")" || return 1
+
+    local selected="${MAIN_BRANCH_POINTS[choice-1]}"
+    if [[ "$selected" == "__manual__" ]]; then
+      local manual_branch
+      manual_branch="$(prompt_line '请输入主分支名: ')" || return 1
+      if [[ -z "$manual_branch" ]]; then
+        warn "主分支不能为空"
+        continue
+      fi
+      if git rev-parse --verify --quiet "$manual_branch^{commit}" >/dev/null; then
+        printf '%s\n' "$manual_branch"
+        return 0
+      fi
+      if git rev-parse --verify --quiet "origin/$manual_branch^{commit}" >/dev/null; then
+        printf 'origin/%s\n' "$manual_branch"
+        return 0
+      fi
+      warn "主分支不存在，请重新选择"
+      continue
+    fi
+
+    printf '%s\n' "$selected"
+    return 0
+  done
+}
+
+ensure_project_config() {
+  ensure_worktree_repo_dir
+  load_project_config
+
+  if [[ -n "$main_branch" ]]; then
+    return 0
+  fi
+
+  main_branch="$(choose_configured_main_branch)" || return 1
+  save_project_config
+  warn "已保存项目配置: $config_path"
+  warn "主分支: $main_branch"
 }
 
 run_setup_script() {
@@ -164,7 +434,7 @@ branch_in_use_by_worktree() {
 build_base_candidates() {
   local current_branch
   current_branch="$(git branch --show-current 2>/dev/null || true)"
-  local raw_candidates=("dev" "main" "master")
+  local raw_candidates=("$main_branch" "main" "master" "dev")
   if [[ -n "$current_branch" ]]; then
     raw_candidates+=("$current_branch")
   fi
@@ -178,6 +448,15 @@ build_base_candidates() {
     [[ -z "$candidate" ]] && continue
     [[ "$seen" == *"|$candidate|"* ]] && continue
     seen+="$candidate|"
+
+    if [[ "$candidate" == origin/* ]]; then
+      if git show-ref --verify --quiet "refs/remotes/$candidate"; then
+        BASE_LABELS+=("$candidate")
+        BASE_POINTS+=("$candidate")
+      fi
+      continue
+    fi
+
     if git show-ref --verify --quiet "refs/heads/$candidate"; then
       BASE_LABELS+=("$candidate")
       BASE_POINTS+=("$candidate")
@@ -199,34 +478,14 @@ choose_base_branch() {
     local i=0
     for label in "${BASE_LABELS[@]}"; do
       i=$((i + 1))
-      if [[ "$label" == "dev" || "$label" == "origin/dev" ]]; then
+      if [[ "$label" == "$main_branch" ]]; then
         default_index="$i"
         break
       fi
     done
 
-    printf '请选择基线分支' >&2
-    if [[ "${#BASE_LABELS[@]}" -gt 0 ]]; then
-      printf '（默认 %s）' "$default_index" >&2
-    fi
-    printf ':\n' >&2
-
-    local idx=1
-    for label in "${BASE_LABELS[@]}"; do
-      printf '%d) %s\n' "$idx" "$label" >&2
-      idx=$((idx + 1))
-    done
-
     local choice
-    choice="$(prompt_line '> ')" || return 1
-    if [[ -z "$choice" ]]; then
-      choice="$default_index"
-    fi
-
-    if [[ ! "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#BASE_LABELS[@]} )); then
-      warn "请输入有效序号"
-      continue
-    fi
+    choice="$(prompt_menu "请选择基于哪个分支创建（默认主分支，直接回车确认）:" "$default_index" "${BASE_LABELS[@]}")" || return 1
 
     local selected="${BASE_POINTS[choice-1]}"
     if [[ "$selected" == "__manual__" ]]; then
@@ -255,7 +514,7 @@ choose_base_branch() {
 
 choose_launch_tool() {
   local choice
-  choice="$(prompt_menu "请选择启动工具:" "codex" "claude" "none")" || return 1
+  choice="$(prompt_menu "请选择启动工具:" 1 "codex" "claude" "none")" || return 1
   case "$choice" in
     1) printf 'codex\n' ;;
     2) printf 'claude\n' ;;
@@ -356,33 +615,28 @@ continue_worktree() {
     die "当前仓库没有可用 worktree"
   fi
 
-  printf '请选择要继续的 worktree:\n' >&2
+  local menu_options=()
   local i
   for i in "${!WT_PATHS[@]}"; do
     local label=""
     if [[ "${WT_PATHS[$i]}" == "$repo_root" ]]; then
       label=" [main worktree]"
     fi
-    printf '%d) %s | %s%s\n' "$((i + 1))" "${WT_BRANCHES[$i]}" "${WT_PATHS[$i]}" "$label" >&2
+    menu_options+=("${WT_BRANCHES[$i]} | ${WT_PATHS[$i]}$label")
   done
 
-  while true; do
-    local choice
-    choice="$(prompt_line '> ')" || return 1
-    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#WT_PATHS[@]} )); then
-      local launch_tool
-      launch_tool="$(choose_launch_tool)" || return 1
-      print_result "${WT_PATHS[choice-1]}" "$launch_tool"
-      return 0
-    fi
-    warn "请输入有效序号"
-  done
+  local choice
+  choice="$(prompt_menu "请选择要继续的 worktree:" 1 "${menu_options[@]}")" || return 1
+  local launch_tool
+  launch_tool="$(choose_launch_tool)" || return 1
+  print_result "${WT_PATHS[choice-1]}" "$launch_tool"
+  return 0
 }
 
-branch_merged_into_dev() {
+branch_merged_into_main_branch() {
   local branch="$1"
   local merged
-  merged="$(git branch --merged dev --format='%(refname:short)' 2>/dev/null || true)"
+  merged="$(git branch --merged "$main_branch" --format='%(refname:short)' 2>/dev/null || true)"
   printf '%s\n' "$merged" | grep -Fx -- "$branch" >/dev/null 2>&1
 }
 
@@ -406,7 +660,7 @@ list_deletable_worktrees() {
     [[ "$branch" == "[detached HEAD]" ]] && continue
     [[ ! -d "$path" ]] && continue
 
-    if branch_merged_into_dev "$branch" && is_clean_worktree "$path"; then
+    if branch_merged_into_main_branch "$branch" && is_clean_worktree "$path"; then
       DELETE_PATHS+=("$path")
       DELETE_BRANCHES+=("$branch")
     fi
@@ -414,8 +668,8 @@ list_deletable_worktrees() {
 }
 
 delete_worktree() {
-  if ! git rev-parse --verify --quiet "dev^{commit}" >/dev/null; then
-    die "dev 分支不存在，无法判断是否已合并"
+  if ! git rev-parse --verify --quiet "$main_branch^{commit}" >/dev/null; then
+    die "主分支不存在，无法判断是否已合并: $main_branch"
   fi
 
   list_deletable_worktrees
@@ -423,20 +677,14 @@ delete_worktree() {
     die "没有可删除的已合并 worktree"
   fi
 
-  printf '请选择要删除的 worktree:\n' >&2
+  local menu_options=()
   local i
   for i in "${!DELETE_PATHS[@]}"; do
-    printf '%d) %s | %s\n' "$((i + 1))" "${DELETE_BRANCHES[$i]}" "${DELETE_PATHS[$i]}" >&2
+    menu_options+=("${DELETE_BRANCHES[$i]} | ${DELETE_PATHS[$i]}")
   done
 
   local choice
-  while true; do
-    choice="$(prompt_line '> ')" || return 1
-    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#DELETE_PATHS[@]} )); then
-      break
-    fi
-    warn "请输入有效序号"
-  done
+  choice="$(prompt_menu "请选择要删除的 worktree:" 1 "${menu_options[@]}")" || return 1
 
   local target_path="${DELETE_PATHS[choice-1]}"
   local target_branch="${DELETE_BRANCHES[choice-1]}"
@@ -447,8 +695,8 @@ delete_worktree() {
   if ! is_clean_worktree "$target_path"; then
     die "目标 worktree 有未提交改动，拒绝删除"
   fi
-  if ! branch_merged_into_dev "$target_branch"; then
-    die "目标分支尚未合并到 dev，拒绝删除"
+  if ! branch_merged_into_main_branch "$target_branch"; then
+    die "目标分支尚未合并到主分支 $main_branch，拒绝删除"
   fi
 
   if ! git worktree remove "$target_path" >&2; then
@@ -470,28 +718,34 @@ show_help() {
   help     显示此帮助信息
 
 无参数运行时进入交互模式:
-  1) 新任务
-  2) 继续已有 worktree
-  3) 删除已合并的 worktree
-  4) 编辑 setup 脚本
+  - 新任务
+  - 继续已有 worktree
+  - 删除已合并的 worktree
+  - 编辑 setup 脚本
 
 setup 脚本位于 ~/.worktrees/<repo-name>/setup.sh
-创建新 worktree 后自动执行，用于初始化环境（安装依赖、复制 .env 等）。
+项目配置位于 ~/.worktrees/<repo-name>/config.json
+创建新 worktree 后自动执行 setup.sh；首次运行会询问主分支并写入 config.json。
 EOF
 }
 
 main() {
   if [[ $# -gt 0 ]]; then
     case "$1" in
-      setup) edit_setup_script ;;
+      setup)
+        ensure_project_config || exit 1
+        edit_setup_script
+        ;;
       -h|--help|help) show_help ;;
       *) die "未知命令: $1" ;;
     esac
     return 0
   fi
 
+  ensure_project_config || exit 1
+
   local choice
-  choice="$(prompt_menu "请选择操作:" "新任务" "继续已有 worktree" "删除已合并的 worktree" "编辑 setup 脚本")" || exit 1
+  choice="$(prompt_menu "请选择操作:" 1 "新任务" "继续已有 worktree" "删除已合并的 worktree" "编辑 setup 脚本")" || exit 1
 
   case "$choice" in
     1) create_new_task ;;
