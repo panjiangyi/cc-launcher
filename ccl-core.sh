@@ -751,9 +751,29 @@ continue_worktree() {
 
 branch_merged_into_main_branch() {
   local branch="$1"
-  local merged
-  merged="$(git branch --merged "$main_branch" --format='%(refname:short)' 2>/dev/null || true)"
-  printf '%s\n' "$merged" | grep -Fx -- "$branch" >/dev/null 2>&1
+  git show-ref --verify --quiet "refs/heads/$branch" || return 1
+
+  local branch_commit
+  branch_commit="$(git rev-parse "$branch^{commit}" 2>/dev/null)" || return 1
+
+  if git merge-base --is-ancestor "$branch_commit" "$main_branch"; then
+    return 0
+  fi
+
+  local merge_line parent
+  while IFS= read -r merge_line; do
+    [[ -z "$merge_line" ]] && continue
+    set -- $merge_line
+    shift 2
+
+    for parent in "$@"; do
+      if git merge-base --is-ancestor "$branch_commit" "$parent"; then
+        return 0
+      fi
+    done
+  done < <(git rev-list --parents --merges "$main_branch")
+
+  return 1
 }
 
 is_clean_worktree() {
@@ -818,7 +838,7 @@ delete_worktree() {
   if ! git worktree remove "$target_path" >&2; then
     die "Failed to delete worktree"
   fi
-  if ! git branch -d "$target_branch" >&2; then
+  if ! git branch -D "$target_branch" >&2; then
     die "Failed to delete branch"
   fi
 

@@ -37,7 +37,7 @@ ccl
 - `setup.sh` 和 `config.json` 保存在 `~/.worktrees/<repo-name>/`
 - 首次运行时，工具会询问该仓库的主分支，并写入 `config.json`
 - 后续创建新任务时，工具会询问基于哪个分支创建 worktree；默认选中配置的主分支，直接按 `Enter` 即可确认
-- 删除 worktree 时，会按这个主分支判断是否已合并
+- 删除 worktree 时，会按这个主分支判断是否已合并；通过 merge commit 合入的分支也会被正确识别，不再依赖 `git branch -d` 的保守判断
 
 交互能力：
 
