@@ -36,14 +36,18 @@ Project config:
 
 - `setup.sh` and `config.json` are stored in `~/.worktrees/<repo-name>/`
 - On first run, the tool asks for the repository's main branch and writes it to `config.json`
-- When creating new tasks later, the tool asks which branch to base the worktree on; the configured main branch is selected by default and can be accepted with `Enter`
-- Worktree deletion checks merge status against that configured main branch and accepts branches merged by merge commit, not just branches that `git branch -d` considers fully merged
+- When creating worktrees later, the tool can either create a new task branch or check out an existing local branch that is not already used by another worktree
+- For new task branches, the tool asks which branch to base the worktree on; the configured main branch is selected by default and can be accepted with `Enter`
+- Deletion checks merge status against that configured main branch and accepts branches merged by merge commit, not just branches that `git branch -d` considers fully merged
+- The delete menu includes clean linked worktrees plus local branches that are not checked out in any worktree, and labels each item as `merged` or `unmerged`
+- Unmerged branches can still be deleted; `ccl` will warn and use `git branch -D` only after determining that the branch is not merged into the configured main branch
 
 Interactive capabilities:
 
 - New task: create `~/.worktrees/<repo-name>/<username>-<task-slug>` and a new `<username>/<task-slug>` branch
+- Existing branch: create a worktree for a local branch that is not checked out elsewhere
 - Continue existing worktree: list all worktrees in the current repository, including the main working tree
-- Delete merged worktree: show only additional worktrees that are clean and already merged into the configured main branch
+- Delete a worktree or branch: show clean additional worktrees plus removable local branches, along with whether each one is merged into the configured main branch
 
 Setup command:
 

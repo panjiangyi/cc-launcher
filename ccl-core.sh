@@ -628,6 +628,54 @@ choose_base_branch() {
   done
 }
 
+build_existing_branch_candidates() {
+  EXISTING_BRANCH_LABELS=()
+  EXISTING_BRANCH_NAMES=()
+
+  local branch
+  while IFS= read -r branch; do
+    [[ -z "$branch" ]] && continue
+    branch_in_use_by_worktree "$branch" && continue
+    EXISTING_BRANCH_LABELS+=("$branch")
+    EXISTING_BRANCH_NAMES+=("$branch")
+  done < <(git for-each-ref --format='%(refname:short)' refs/heads)
+
+  EXISTING_BRANCH_LABELS+=("Enter another branch manually")
+  EXISTING_BRANCH_NAMES+=("__manual__")
+}
+
+choose_existing_branch() {
+  build_existing_branch_candidates
+
+  while true; do
+    local choice
+    choice="$(prompt_menu "Choose an existing local branch for the worktree:" 1 "${EXISTING_BRANCH_LABELS[@]}")" || return 1
+
+    local selected="${EXISTING_BRANCH_NAMES[choice-1]}"
+    if [[ "$selected" == "__manual__" ]]; then
+      local manual_branch
+      manual_branch="$(prompt_line 'Enter the existing local branch name: ')" || return 1
+      if [[ -z "$manual_branch" ]]; then
+        warn "Branch cannot be empty"
+        continue
+      fi
+      if ! git_branch_exists_local "$manual_branch"; then
+        warn "Local branch does not exist. Choose again."
+        continue
+      fi
+      if branch_in_use_by_worktree "$manual_branch"; then
+        warn "That branch is already checked out in a worktree. Choose again."
+        continue
+      fi
+      printf '%s\n' "$manual_branch"
+      return 0
+    fi
+
+    printf '%s\n' "$selected"
+    return 0
+  done
+}
+
 choose_launch_tool() {
   local choice
   choice="$(prompt_menu "Choose a launch tool:" 1 "codex" "claude" "none")" || return 1
@@ -678,8 +726,54 @@ collect_worktrees() {
   done < <(git worktree list --porcelain && printf '\n')
 }
 
+create_worktree_for_existing_branch() {
+  local existing_branch="$1"
+  local branch_slug worktree_path
+
+  if ! git_branch_exists_local "$existing_branch"; then
+    die "Local branch does not exist: $existing_branch"
+  fi
+  if branch_in_use_by_worktree "$existing_branch"; then
+    die "Another worktree is already using that branch: $existing_branch"
+  fi
+
+  branch_slug="$(slugify "${existing_branch//\//-}")"
+  if [[ -z "$branch_slug" ]]; then
+    die "Could not derive a worktree directory name from branch: $existing_branch"
+  fi
+
+  worktree_path="$worktree_repo_dir/$branch_slug"
+  printf 'Branch: %s\n' "$existing_branch" >&2
+  printf 'Path: %s\n' "$worktree_path" >&2
+
+  if [[ -e "$worktree_path" ]]; then
+    die "The target worktree directory already exists: $worktree_path"
+  fi
+
+  if ! git worktree add "$worktree_path" "$existing_branch" >&2; then
+    die "Failed to create worktree"
+  fi
+
+  printf '%s\n' "$worktree_path"
+}
+
 create_new_task() {
   ensure_worktree_repo_dir
+
+  local mode
+  mode="$(prompt_menu "Choose how to create the worktree:" 1 "Create a new branch for a task" "Use an existing local branch")" || return 1
+
+  if [[ "$mode" == "2" ]]; then
+    local existing_branch worktree_path launch_tool
+    existing_branch="$(choose_existing_branch)" || return 1
+    worktree_path="$(create_worktree_for_existing_branch "$existing_branch")" || return 1
+
+    run_setup_script "$worktree_path"
+
+    launch_tool="$(choose_launch_tool)" || return 1
+    print_result "$worktree_path" "$launch_tool"
+    return 0
+  fi
 
   while true; do
     local task_name slug branch_name dir_name worktree_path
@@ -756,24 +850,7 @@ branch_merged_into_main_branch() {
   local branch_commit
   branch_commit="$(git rev-parse "$branch^{commit}" 2>/dev/null)" || return 1
 
-  if git merge-base --is-ancestor "$branch_commit" "$main_branch"; then
-    return 0
-  fi
-
-  local merge_line parent
-  while IFS= read -r merge_line; do
-    [[ -z "$merge_line" ]] && continue
-    set -- $merge_line
-    shift 2
-
-    for parent in "$@"; do
-      if git merge-base --is-ancestor "$branch_commit" "$parent"; then
-        return 0
-      fi
-    done
-  done < <(git rev-list --parents --merges "$main_branch")
-
-  return 1
+  git merge-base --is-ancestor "$branch_commit" "$main_branch"
 }
 
 is_clean_worktree() {
@@ -786,6 +863,8 @@ list_deletable_worktrees() {
   collect_worktrees
   DELETE_PATHS=()
   DELETE_BRANCHES=()
+  DELETE_KINDS=()
+  DELETE_MERGED=()
 
   local i
   for i in "${!WT_PATHS[@]}"; do
@@ -796,11 +875,32 @@ list_deletable_worktrees() {
     [[ "$branch" == "[detached HEAD]" ]] && continue
     [[ ! -d "$path" ]] && continue
 
-    if branch_merged_into_main_branch "$branch" && is_clean_worktree "$path"; then
-      DELETE_PATHS+=("$path")
-      DELETE_BRANCHES+=("$branch")
+    is_clean_worktree "$path" || continue
+
+    DELETE_PATHS+=("$path")
+    DELETE_BRANCHES+=("$branch")
+    DELETE_KINDS+=("worktree")
+    if branch_merged_into_main_branch "$branch"; then
+      DELETE_MERGED+=("yes")
+    else
+      DELETE_MERGED+=("no")
     fi
   done
+
+  while IFS= read -r branch; do
+    [[ -z "$branch" ]] && continue
+    [[ "$branch" == "$main_branch" ]] && continue
+    branch_in_use_by_worktree "$branch" && continue
+
+    DELETE_PATHS+=("")
+    DELETE_BRANCHES+=("$branch")
+    DELETE_KINDS+=("branch")
+    if branch_merged_into_main_branch "$branch"; then
+      DELETE_MERGED+=("yes")
+    else
+      DELETE_MERGED+=("no")
+    fi
+  done < <(git for-each-ref --format='%(refname:short)' refs/heads)
 }
 
 delete_worktree() {
@@ -808,41 +908,67 @@ delete_worktree() {
     die "Main branch does not exist, cannot determine merge status: $main_branch"
   fi
 
+  printf 'Loading clean worktrees and removable branches...\n' >&2
   list_deletable_worktrees
   if [[ "${#DELETE_PATHS[@]}" -eq 0 ]]; then
-    die "No merged worktrees are available for deletion"
+    die "No clean worktrees or removable local branches are available for deletion"
   fi
 
   local menu_options=()
   local i
   for i in "${!DELETE_PATHS[@]}"; do
-    menu_options+=("${DELETE_BRANCHES[$i]} | ${DELETE_PATHS[$i]}")
+    local status_label="unmerged"
+    [[ "${DELETE_MERGED[$i]}" == "yes" ]] && status_label="merged"
+    if [[ "${DELETE_KINDS[$i]}" == "worktree" ]]; then
+      menu_options+=("worktree | $status_label | ${DELETE_BRANCHES[$i]} | ${DELETE_PATHS[$i]}")
+    else
+      menu_options+=("branch | $status_label | ${DELETE_BRANCHES[$i]}")
+    fi
   done
 
   local choice
-  choice="$(prompt_menu "Choose a worktree to delete:" 1 "${menu_options[@]}")" || return 1
+  choice="$(prompt_menu "Choose a worktree or branch to delete:" 1 "${menu_options[@]}")" || return 1
 
   local target_path="${DELETE_PATHS[choice-1]}"
   local target_branch="${DELETE_BRANCHES[choice-1]}"
+  local target_kind="${DELETE_KINDS[choice-1]}"
+  local target_merged="${DELETE_MERGED[choice-1]}"
 
-  if [[ ! -d "$target_path" ]]; then
-    die "Target path does not exist: $target_path"
-  fi
-  if ! is_clean_worktree "$target_path"; then
-    die "Target worktree has uncommitted changes; refusing to delete"
-  fi
-  if ! branch_merged_into_main_branch "$target_branch"; then
-    die "Target branch has not been merged into main branch $main_branch; refusing to delete"
+  if [[ "$target_kind" == "worktree" ]]; then
+    if [[ ! -d "$target_path" ]]; then
+      die "Target path does not exist: $target_path"
+    fi
+    if ! is_clean_worktree "$target_path"; then
+      die "Target worktree has uncommitted changes; refusing to delete"
+    fi
+    if ! git worktree remove "$target_path" >&2; then
+      die "Failed to delete worktree"
+    fi
+  else
+    if ! git_branch_exists_local "$target_branch"; then
+      die "Target branch does not exist: $target_branch"
+    fi
+    if branch_in_use_by_worktree "$target_branch"; then
+      die "Target branch is currently checked out in a worktree; refusing to delete"
+    fi
   fi
 
-  if ! git worktree remove "$target_path" >&2; then
-    die "Failed to delete worktree"
-  fi
-  if ! git branch -D "$target_branch" >&2; then
-    die "Failed to delete branch"
+  if [[ "$target_merged" == "yes" ]]; then
+    if ! git branch -d "$target_branch" >&2; then
+      die "Failed to delete merged branch"
+    fi
+  else
+    printf 'Branch %s is not merged into %s; deleting with git branch -D\n' "$target_branch" "$main_branch" >&2
+    if ! git branch -D "$target_branch" >&2; then
+      die "Failed to force delete unmerged branch"
+    fi
   fi
 
-  printf 'Deleted: %s (%s)\n' "$target_branch" "$target_path" >&2
+  if [[ "$target_kind" == "worktree" ]]; then
+    printf 'Deleted worktree and branch: %s (%s, %s)\n' "$target_branch" "$target_path" "$target_merged" >&2
+  else
+    printf 'Deleted branch: %s (%s)\n' "$target_branch" "$target_merged" >&2
+  fi
 }
 
 show_help() {
@@ -857,7 +983,7 @@ Commands:
 Run without arguments to open the interactive menu:
   - New task
   - Continue an existing worktree
-  - Delete a merged worktree
+  - Delete a worktree or branch
   - Edit setup script
 
 The setup script lives at ~/.worktrees/<repo-name>/setup.sh
@@ -929,7 +1055,7 @@ main() {
   ensure_project_config || exit 1
 
   local choice
-  choice="$(prompt_menu "Choose an action:" 1 "New task" "Continue an existing worktree" "Delete a merged worktree" "Edit setup script")" || exit 1
+  choice="$(prompt_menu "Choose an action:" 1 "New task" "Continue an existing worktree" "Delete a worktree or branch" "Edit setup script")" || exit 1
 
   case "$choice" in
     1) create_new_task ;;

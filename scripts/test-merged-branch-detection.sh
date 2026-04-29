@@ -41,6 +41,23 @@ run_branch_check() {
   )
 }
 
+run_branch_delete() {
+  local repo="$1"
+  local branch="$2"
+
+  (
+    cd "$repo"
+    source "$CORE_SCRIPT"
+    main_branch="dev"
+
+    if branch_merged_into_main_branch "$branch"; then
+      git branch -d "$branch"
+    else
+      git branch -D "$branch"
+    fi
+  )
+}
+
 tmpdir="$(mktemp -d /tmp/ccl-merge-test-XXXXXX)"
 trap 'rm -rf "$tmpdir"' EXIT
 
@@ -79,5 +96,11 @@ set -e
 
 assert_success "$merged_status" "branch_merged_into_main_branch should accept a branch merged through a merge commit"
 assert_failure "$unmerged_status" "branch_merged_into_main_branch should reject a branch that has not been merged"
+
+run_branch_delete "$repo" merged-via-merge-commit >/dev/null
+assert_failure "$(git show-ref --verify --quiet refs/heads/merged-via-merge-commit; echo $?)" "merged branch should be deleted"
+
+run_branch_delete "$repo" unmerged-feature >/dev/null
+assert_failure "$(git show-ref --verify --quiet refs/heads/unmerged-feature; echo $?)" "unmerged branch should be force deleted after merge-status check"
 
 printf 'ok - merged branch detection\n'
