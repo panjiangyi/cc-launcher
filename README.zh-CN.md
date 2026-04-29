@@ -36,7 +36,7 @@ ccl
 
 - `setup.sh` 和 `config.json` 保存在 `~/.worktrees/<repo-name>/`
 - 首次运行时，工具会询问该仓库的主分支，并写入 `config.json`
-- 后续创建 worktree 时，工具可以选择新建任务分支，也可以基于一个尚未被其他 worktree 占用的本地已有分支创建 worktree
+- 后续创建 worktree 时，工具可以选择新建任务分支，也可以基于一个尚未被其他 worktree 占用的本地分支，或筛选后的远程分支创建 worktree
 - 新建任务分支时，工具会询问基于哪个分支创建 worktree；默认选中配置的主分支，直接按 `Enter` 即可确认
 - 删除时，会按这个主分支判断是否已合并；通过 merge commit 合入的分支也会被正确识别，不再依赖 `git branch -d` 的保守判断
 - 删除菜单会同时包含干净的附加 worktree，以及没有被任何 worktree 占用的本地分支，并为每一项标注 `merged` 或 `unmerged`
@@ -45,7 +45,7 @@ ccl
 交互能力：
 
 - 新任务：创建 `~/.worktrees/<repo-name>/<username>-<task-slug>`，并新建 `<username>/<task-slug>` 分支
-- 已有分支：为一个没有被其他 worktree checkout 的本地分支创建 worktree
+- 已有分支：为一个没有被其他 worktree checkout 的本地分支创建 worktree；远程分支需要先按关键词筛选，选中后会创建本地 tracking 分支
 - 继续已有 worktree：列出当前仓库中的所有 worktree，包括主工作区
 - 删除 worktree 或 branch：显示干净的附加 worktree 和可删除的本地分支，并标注它们是否已合并到配置主分支
 

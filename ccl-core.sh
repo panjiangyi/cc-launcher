@@ -528,6 +528,10 @@ git_branch_exists_local() {
   git show-ref --verify --quiet "refs/heads/$1"
 }
 
+git_branch_exists_remote() {
+  git show-ref --verify --quiet "refs/remotes/$1"
+}
+
 branch_in_use_by_worktree() {
   local branch="$1"
   local current_branch=""
@@ -640,8 +644,32 @@ build_existing_branch_candidates() {
     EXISTING_BRANCH_NAMES+=("$branch")
   done < <(git for-each-ref --format='%(refname:short)' refs/heads)
 
+  EXISTING_BRANCH_LABELS+=("Search remote branches")
+  EXISTING_BRANCH_NAMES+=("__search_remote__")
   EXISTING_BRANCH_LABELS+=("Enter another branch manually")
   EXISTING_BRANCH_NAMES+=("__manual__")
+}
+
+build_remote_branch_candidates() {
+  local filter="$1"
+  REMOTE_BRANCH_LABELS=()
+  REMOTE_BRANCH_NAMES=()
+
+  local branch local_branch
+  while IFS= read -r branch; do
+    [[ -z "$branch" ]] && continue
+    [[ "$branch" == "origin/HEAD" ]] && continue
+    [[ "$branch" == */HEAD ]] && continue
+    [[ -n "$filter" && "$branch" != *"$filter"* ]] && continue
+
+    local_branch="${branch#*/}"
+    [[ -z "$local_branch" ]] && continue
+    git_branch_exists_local "$local_branch" && continue
+    branch_in_use_by_worktree "$local_branch" && continue
+
+    REMOTE_BRANCH_LABELS+=("$branch")
+    REMOTE_BRANCH_NAMES+=("$branch")
+  done < <(git for-each-ref --format='%(refname:short)' refs/remotes)
 }
 
 choose_existing_branch() {
@@ -652,18 +680,42 @@ choose_existing_branch() {
     choice="$(prompt_menu "Choose an existing local branch for the worktree:" 1 "${EXISTING_BRANCH_LABELS[@]}")" || return 1
 
     local selected="${EXISTING_BRANCH_NAMES[choice-1]}"
+    if [[ "$selected" == "__search_remote__" ]]; then
+      local remote_filter
+      remote_filter="$(prompt_line 'Filter remote branches (substring): ')" || return 1
+      if [[ -z "$remote_filter" ]]; then
+        warn "Remote branch filter cannot be empty"
+        continue
+      fi
+
+      build_remote_branch_candidates "$remote_filter"
+      if [[ "${#REMOTE_BRANCH_NAMES[@]}" -eq 0 ]]; then
+        warn "No matching remote branches. Try another filter."
+        continue
+      fi
+
+      local remote_choice
+      remote_choice="$(prompt_menu "Choose a matching remote branch:" 1 "${REMOTE_BRANCH_LABELS[@]}")" || return 1
+      printf '%s\n' "${REMOTE_BRANCH_NAMES[remote_choice-1]}"
+      return 0
+    fi
+
     if [[ "$selected" == "__manual__" ]]; then
       local manual_branch
-      manual_branch="$(prompt_line 'Enter the existing local branch name: ')" || return 1
+      manual_branch="$(prompt_line 'Enter the existing local or remote branch name: ')" || return 1
       if [[ -z "$manual_branch" ]]; then
         warn "Branch cannot be empty"
         continue
       fi
-      if ! git_branch_exists_local "$manual_branch"; then
-        warn "Local branch does not exist. Choose again."
+      if ! git_branch_exists_local "$manual_branch" && ! git_branch_exists_remote "$manual_branch"; then
+        warn "Local or remote branch does not exist. Choose again."
         continue
       fi
-      if branch_in_use_by_worktree "$manual_branch"; then
+      local checked_out_branch="$manual_branch"
+      if ! git_branch_exists_local "$checked_out_branch"; then
+        checked_out_branch="${manual_branch#*/}"
+      fi
+      if branch_in_use_by_worktree "$checked_out_branch"; then
         warn "That branch is already checked out in a worktree. Choose again."
         continue
       fi
@@ -728,29 +780,45 @@ collect_worktrees() {
 
 create_worktree_for_existing_branch() {
   local existing_branch="$1"
+  local checkout_branch="$existing_branch"
   local branch_slug worktree_path
 
   if ! git_branch_exists_local "$existing_branch"; then
-    die "Local branch does not exist: $existing_branch"
-  fi
-  if branch_in_use_by_worktree "$existing_branch"; then
-    die "Another worktree is already using that branch: $existing_branch"
+    if ! git_branch_exists_remote "$existing_branch"; then
+      die "Local or remote branch does not exist: $existing_branch"
+    fi
+
+    checkout_branch="${existing_branch#*/}"
+    if [[ -z "$checkout_branch" || "$checkout_branch" == "$existing_branch" ]]; then
+      die "Remote branch must include a remote name: $existing_branch"
+    fi
+    if git_branch_exists_local "$checkout_branch"; then
+      warn "Using existing local branch $checkout_branch for remote branch $existing_branch"
+    else
+      if ! git branch --track "$checkout_branch" "$existing_branch" >&2; then
+        die "Failed to create local tracking branch for $existing_branch"
+      fi
+    fi
   fi
 
-  branch_slug="$(slugify "${existing_branch//\//-}")"
+  if branch_in_use_by_worktree "$checkout_branch"; then
+    die "Another worktree is already using that branch: $checkout_branch"
+  fi
+
+  branch_slug="$(slugify "${checkout_branch//\//-}")"
   if [[ -z "$branch_slug" ]]; then
-    die "Could not derive a worktree directory name from branch: $existing_branch"
+    die "Could not derive a worktree directory name from branch: $checkout_branch"
   fi
 
   worktree_path="$worktree_repo_dir/$branch_slug"
-  printf 'Branch: %s\n' "$existing_branch" >&2
+  printf 'Branch: %s\n' "$checkout_branch" >&2
   printf 'Path: %s\n' "$worktree_path" >&2
 
   if [[ -e "$worktree_path" ]]; then
     die "The target worktree directory already exists: $worktree_path"
   fi
 
-  if ! git worktree add "$worktree_path" "$existing_branch" >&2; then
+  if ! git worktree add "$worktree_path" "$checkout_branch" >&2; then
     die "Failed to create worktree"
   fi
 
