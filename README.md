@@ -1,6 +1,6 @@
 # cc-launch
 
-[中文说明](./README.zh-CN.md)
+[中文说明](https://github.com/panjiangyi/cc-launcher/blob/main/README.zh-CN.md)
 
 A Git worktree launcher with a single `ccl` entrypoint for creating, entering, and cleaning up worktrees, then launching `codex` or `claude` in the target directory.
 

@@ -9,7 +9,9 @@
     "bin",
     "ccl-core.sh",
     "ccl-shell.sh",
-    "README.md"
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE"
   ],
   "scripts": {
     "test": "bash ./scripts/test-worktree-root.sh && bash ./scripts/test-merged-branch-detection.sh && bash ./scripts/test-existing-branch-worktree.sh",
@@ -23,5 +25,13 @@
     "codex",
     "claude"
   ],
-  "license": "UNLICENSED"
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/panjiangyi/cc-launcher.git"
+  },
+  "homepage": "https://github.com/panjiangyi/cc-launcher#readme",
+  "bugs": {
+    "url": "https://github.com/panjiangyi/cc-launcher/issues"
+  },
+  "license": "MIT"
 }

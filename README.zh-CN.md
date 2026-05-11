@@ -1,6 +1,6 @@
 # cc-launch
 
-[English](./README.md)
+[English](https://github.com/panjiangyi/cc-launcher/blob/main/README.md)
 
 一个 Git worktree 启动器，提供统一的 `ccl` 入口，用于创建、进入和清理 worktree，并在目标目录中启动 `codex` 或 `claude`。
 
