@@ -65,7 +65,7 @@ render_menu() {
   local selected="$3"
   shift 3
   local options=("$@")
-  local help_text="${PROMPT_MENU_HELP_TEXT:-Use ↑/↓ to move, Enter to confirm}"
+  local help_text="${PROMPT_MENU_HELP_TEXT:-Use ↑/↓ to move, Enter to confirm, q/Esc/Backspace to go back}"
 
   if (( PROMPT_MENU_RENDERED_LINES > 0 )); then
     printf '\033[%dA\r\033[J' "$PROMPT_MENU_RENDERED_LINES" >&"$menu_fd"
@@ -238,10 +238,20 @@ prompt_menu() {
       j)
         selected="$(menu_move_down "$selected" "$count")"
         ;;
+      q|Q|$'\x7f'|$'\x08')
+        cleanup_prompt_menu
+        trap - INT TERM EXIT
+        return 1
+        ;;
       $'\x1b')
         next=""
         next2=""
         IFS= read -rsn1 -t 0.05 -u "$menu_fd" next || true
+        if [[ -z "$next" ]]; then
+          cleanup_prompt_menu
+          trap - INT TERM EXIT
+          return 1
+        fi
         if [[ "$next" != "[" ]]; then
           continue
         fi
@@ -326,7 +336,7 @@ prompt_multi_menu() {
   done
 
   local prev_help="${PROMPT_MENU_HELP_TEXT:-}"
-  PROMPT_MENU_HELP_TEXT="Use ↑/↓ to move, Space to toggle, a to toggle all, Enter to confirm"
+  PROMPT_MENU_HELP_TEXT="Use ↑/↓ to move, Space to toggle, a to toggle all, Enter to confirm, q/Esc/Backspace to go back"
 
   local menu_fd
   exec {menu_fd}<>/dev/tty
@@ -408,10 +418,22 @@ prompt_multi_menu() {
       j)
         selected="$(menu_move_down "$selected" "$count")"
         ;;
+      q|Q|$'\x7f'|$'\x08')
+        PROMPT_MENU_HELP_TEXT="$prev_help"
+        cleanup_prompt_menu
+        trap - INT TERM EXIT
+        return 1
+        ;;
       $'\x1b')
         next=""
         next2=""
         IFS= read -rsn1 -t 0.05 -u "$menu_fd" next || true
+        if [[ -z "$next" ]]; then
+          PROMPT_MENU_HELP_TEXT="$prev_help"
+          cleanup_prompt_menu
+          trap - INT TERM EXIT
+          return 1
+        fi
         if [[ "$next" != "[" ]]; then
           continue
         fi
@@ -1058,7 +1080,8 @@ create_new_task() {
 continue_worktree() {
   collect_worktrees
   if [[ "${#WT_PATHS[@]}" -eq 0 ]]; then
-    die "No worktrees available in the current repository"
+    warn "No worktrees available in the current repository"
+    return 1
   fi
 
   local menu_options=()
@@ -1141,13 +1164,15 @@ list_deletable_worktrees() {
 
 delete_worktree() {
   if ! git rev-parse --verify --quiet "$main_branch^{commit}" >/dev/null; then
-    die "Main branch does not exist, cannot determine merge status: $main_branch"
+    warn "Main branch does not exist, cannot determine merge status: $main_branch"
+    return 1
   fi
 
   printf 'Loading clean worktrees and removable branches...\n' >&2
   list_deletable_worktrees
   if [[ "${#DELETE_PATHS[@]}" -eq 0 ]]; then
-    die "No clean worktrees or removable local branches are available for deletion"
+    warn "No clean worktrees or removable local branches are available for deletion"
+    return 1
   fi
 
   local menu_options=()
@@ -1320,15 +1345,25 @@ main() {
   ensure_project_config || exit 1
 
   local choice
-  choice="$(prompt_menu "Choose an action:" 1 "New task" "Continue an existing worktree" "Delete a worktree or branch" "Edit setup script")" || exit 1
+  while true; do
+    if ! choice="$(prompt_menu "Choose an action:" 1 \
+        "New task" \
+        "Continue an existing worktree" \
+        "Delete a worktree or branch" \
+        "Edit setup script" \
+        "Quit")"; then
+      exit 0
+    fi
 
-  case "$choice" in
-    1) create_new_task ;;
-    2) continue_worktree ;;
-    3) delete_worktree ;;
-    4) edit_setup_script ;;
-    *) die "Unknown action" ;;
-  esac
+    case "$choice" in
+      1) if create_new_task; then break; fi ;;
+      2) if continue_worktree; then break; fi ;;
+      3) delete_worktree || true ;;
+      4) edit_setup_script || true ;;
+      5) exit 0 ;;
+      *) die "Unknown action" ;;
+    esac
+  done
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

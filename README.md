@@ -30,6 +30,7 @@ Menu interaction:
 
 - Use `↑` / `↓` to move
 - Press `Enter` to confirm
+- Press `q`, `Esc`, or `Backspace` to go back; from the top-level menu this exits, otherwise it returns to the previous menu
 - Mouse wheel navigation and click-to-select are supported when the terminal reports mouse coordinates
 
 Project config:
