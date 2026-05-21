@@ -47,7 +47,7 @@ ccl
 - 新任务：创建 `~/.worktrees/<repo-name>/<username>-<task-slug>`，并新建 `<username>/<task-slug>` 分支
 - 已有分支：为一个没有被其他 worktree checkout 的本地分支创建 worktree；远程分支需要先按关键词筛选，选中后会创建本地 tracking 分支
 - 继续已有 worktree：列出当前仓库中的所有 worktree，包括主工作区
-- 删除 worktree 或 branch：显示干净的附加 worktree 和可删除的本地分支，并标注它们是否已合并到配置主分支
+- 删除 worktree 或 branch：显示干净的附加 worktree 和可删除的本地分支，并标注它们是否已合并到配置主分支；支持多选（空格切换勾选，`a` 全选/全不选，回车确认）
 
 Setup 命令：
 

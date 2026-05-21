@@ -47,7 +47,7 @@ Interactive capabilities:
 - New task: create `~/.worktrees/<repo-name>/<username>-<task-slug>` and a new `<username>/<task-slug>` branch
 - Existing branch: create a worktree for a local branch, or search remote branches by substring and create a local tracking branch from a match
 - Continue existing worktree: list all worktrees in the current repository, including the main working tree
-- Delete a worktree or branch: show clean additional worktrees plus removable local branches, along with whether each one is merged into the configured main branch
+- Delete worktrees or branches: show clean additional worktrees plus removable local branches with merge status labels; supports multi-select (Space to toggle, `a` to toggle all, Enter to confirm)
 
 Setup command:
 

@@ -65,7 +65,7 @@ render_menu() {
   local selected="$3"
   shift 3
   local options=("$@")
-  local help_text="Use ↑/↓ to move, Enter to confirm"
+  local help_text="${PROMPT_MENU_HELP_TEXT:-Use ↑/↓ to move, Enter to confirm}"
 
   if (( PROMPT_MENU_RENDERED_LINES > 0 )); then
     printf '\033[%dA\r\033[J' "$PROMPT_MENU_RENDERED_LINES" >&"$menu_fd"
@@ -294,6 +294,174 @@ prompt_menu() {
     esac
   done
 
+  cleanup_prompt_menu
+  trap - INT TERM EXIT
+  return 1
+}
+
+prompt_multi_menu() {
+  local title="$1"
+  local default_index="$2"
+  shift 2
+  local raw_options=("$@")
+  local count="${#raw_options[@]}"
+  local selected="$default_index"
+
+  if (( count == 0 )); then
+    return 1
+  fi
+
+  if (( selected < 1 || selected > count )); then
+    selected=1
+  fi
+
+  if [[ ! -t 2 ]] || [[ ! -r /dev/tty ]] || [[ ! -w /dev/tty ]]; then
+    die "Interactive menus require a usable TTY"
+  fi
+
+  local marks=()
+  local i
+  for (( i = 0; i < count; i++ )); do
+    marks[i]=0
+  done
+
+  local prev_help="${PROMPT_MENU_HELP_TEXT:-}"
+  PROMPT_MENU_HELP_TEXT="Use ↑/↓ to move, Space to toggle, a to toggle all, Enter to confirm"
+
+  local menu_fd
+  exec {menu_fd}<>/dev/tty
+  PROMPT_MENU_FD="$menu_fd"
+  PROMPT_MENU_RENDERED_LINES=0
+  PROMPT_MENU_STTY_STATE="$(stty -g < /dev/tty 2>/dev/null || true)"
+  trap 'PROMPT_MENU_HELP_TEXT="'"$prev_help"'"; cleanup_prompt_menu; exit 130' INT TERM
+  trap 'PROMPT_MENU_HELP_TEXT="'"$prev_help"'"; cleanup_prompt_menu' EXIT
+
+  local cursor_response=""
+  local menu_row=1
+  local has_cursor_position=0
+  printf '\033[6n' >&"$menu_fd"
+  if IFS= read -rsdR -t 0.1 -u "$menu_fd" cursor_response; then
+    cursor_response="${cursor_response#*[}"
+    menu_row="${cursor_response%%;*}"
+    if [[ ! "$menu_row" =~ ^[0-9]+$ ]]; then
+      menu_row=1
+    else
+      has_cursor_position=1
+    fi
+  fi
+
+  printf '\033[?25l\033[?1000h\033[?1006h' >&"$menu_fd"
+
+  local key next next2 mouse_data mouse_suffix mouse_button mouse_x mouse_y option_row
+  local display_options=()
+  local selected_indices=()
+  local k
+  while true; do
+    display_options=()
+    for (( k = 0; k < count; k++ )); do
+      if (( marks[k] == 1 )); then
+        display_options+=("[x] ${raw_options[$k]}")
+      else
+        display_options+=("[ ] ${raw_options[$k]}")
+      fi
+    done
+    render_menu "$menu_fd" "$title" "$selected" "${display_options[@]}"
+    IFS= read -rsn1 -u "$menu_fd" key || break
+
+    case "$key" in
+      $'\n'|$'\r'|"")
+        selected_indices=()
+        for (( k = 0; k < count; k++ )); do
+          if (( marks[k] == 1 )); then
+            selected_indices+=("$((k + 1))")
+          fi
+        done
+        PROMPT_MENU_HELP_TEXT="$prev_help"
+        cleanup_prompt_menu
+        trap - INT TERM EXIT
+        if (( ${#selected_indices[@]} == 0 )); then
+          return 1
+        fi
+        printf '%s\n' "${selected_indices[*]}"
+        return 0
+        ;;
+      ' ')
+        marks[selected-1]=$((1 - marks[selected-1]))
+        ;;
+      a|A)
+        local any_unset=0
+        for (( i = 0; i < count; i++ )); do
+          if (( marks[i] == 0 )); then
+            any_unset=1
+            break
+          fi
+        done
+        local new_value=0
+        (( any_unset == 1 )) && new_value=1
+        for (( i = 0; i < count; i++ )); do
+          marks[i]=$new_value
+        done
+        ;;
+      k)
+        selected="$(menu_move_up "$selected" "$count")"
+        ;;
+      j)
+        selected="$(menu_move_down "$selected" "$count")"
+        ;;
+      $'\x1b')
+        next=""
+        next2=""
+        IFS= read -rsn1 -t 0.05 -u "$menu_fd" next || true
+        if [[ "$next" != "[" ]]; then
+          continue
+        fi
+
+        IFS= read -rsn1 -t 0.05 -u "$menu_fd" next2 || true
+        case "$next2" in
+          A)
+            selected="$(menu_move_up "$selected" "$count")"
+            ;;
+          B)
+            selected="$(menu_move_down "$selected" "$count")"
+            ;;
+          '<')
+            mouse_data=""
+            while IFS= read -rsn1 -t 0.05 -u "$menu_fd" next; do
+              mouse_data+="$next"
+              if [[ "$next" == "M" || "$next" == "m" ]]; then
+                break
+              fi
+            done
+
+            mouse_suffix="${mouse_data: -1}"
+            mouse_data="${mouse_data%?}"
+            IFS=';' read -r mouse_button mouse_x mouse_y <<< "$mouse_data"
+
+            case "$mouse_button" in
+              64)
+                selected="$(menu_move_up "$selected" "$count")"
+                ;;
+              65)
+                selected="$(menu_move_down "$selected" "$count")"
+                ;;
+              0)
+                (( has_cursor_position == 1 )) || continue
+                option_row="$((mouse_y - menu_row))"
+                if (( option_row >= 1 && option_row <= count )); then
+                  selected="$option_row"
+                  if [[ "$mouse_suffix" == "M" ]]; then
+                    marks[selected-1]=$((1 - marks[selected-1]))
+                  fi
+                fi
+                ;;
+            esac
+            ;;
+        esac
+        ;;
+    esac
+  done
+
+  PROMPT_MENU_HELP_TEXT="$prev_help"
   cleanup_prompt_menu
   trap - INT TERM EXIT
   return 1
@@ -994,48 +1162,77 @@ delete_worktree() {
     fi
   done
 
-  local choice
-  choice="$(prompt_menu "Choose a worktree or branch to delete:" 1 "${menu_options[@]}")" || return 1
+  local choices_str
+  choices_str="$(prompt_multi_menu "Choose worktrees or branches to delete:" 1 "${menu_options[@]}")" || return 1
 
-  local target_path="${DELETE_PATHS[choice-1]}"
-  local target_branch="${DELETE_BRANCHES[choice-1]}"
-  local target_kind="${DELETE_KINDS[choice-1]}"
-  local target_merged="${DELETE_MERGED[choice-1]}"
+  local choices=()
+  read -ra choices <<< "$choices_str"
 
-  if [[ "$target_kind" == "worktree" ]]; then
-    if [[ ! -d "$target_path" ]]; then
-      die "Target path does not exist: $target_path"
-    fi
-    if ! is_clean_worktree "$target_path"; then
-      die "Target worktree has uncommitted changes; refusing to delete"
-    fi
-    if ! git worktree remove "$target_path" >&2; then
-      die "Failed to delete worktree"
-    fi
-  else
-    if ! git_branch_exists_local "$target_branch"; then
-      die "Target branch does not exist: $target_branch"
-    fi
-    if branch_in_use_by_worktree "$target_branch"; then
-      die "Target branch is currently checked out in a worktree; refusing to delete"
-    fi
-  fi
+  local total=0
+  local fails=0
+  local choice idx target_path target_branch target_kind target_merged
+  for choice in "${choices[@]}"; do
+    total=$((total + 1))
+    idx=$((choice - 1))
+    target_path="${DELETE_PATHS[$idx]}"
+    target_branch="${DELETE_BRANCHES[$idx]}"
+    target_kind="${DELETE_KINDS[$idx]}"
+    target_merged="${DELETE_MERGED[$idx]}"
 
-  if [[ "$target_merged" == "yes" ]]; then
-    if ! git branch -d "$target_branch" >&2; then
-      die "Failed to delete merged branch"
+    if [[ "$target_kind" == "worktree" ]]; then
+      if [[ ! -d "$target_path" ]]; then
+        warn "Target path does not exist: $target_path"
+        fails=$((fails + 1))
+        continue
+      fi
+      if ! is_clean_worktree "$target_path"; then
+        warn "Worktree has uncommitted changes; skipping: $target_path"
+        fails=$((fails + 1))
+        continue
+      fi
+      if ! git worktree remove "$target_path" >&2; then
+        warn "Failed to delete worktree: $target_path"
+        fails=$((fails + 1))
+        continue
+      fi
+    else
+      if ! git_branch_exists_local "$target_branch"; then
+        warn "Branch does not exist: $target_branch"
+        fails=$((fails + 1))
+        continue
+      fi
+      if branch_in_use_by_worktree "$target_branch"; then
+        warn "Branch is currently checked out in a worktree; skipping: $target_branch"
+        fails=$((fails + 1))
+        continue
+      fi
     fi
-  else
-    printf 'Branch %s is not merged into %s; deleting with git branch -D\n' "$target_branch" "$main_branch" >&2
-    if ! git branch -D "$target_branch" >&2; then
-      die "Failed to force delete unmerged branch"
-    fi
-  fi
 
-  if [[ "$target_kind" == "worktree" ]]; then
-    printf 'Deleted worktree and branch: %s (%s, %s)\n' "$target_branch" "$target_path" "$target_merged" >&2
-  else
-    printf 'Deleted branch: %s (%s)\n' "$target_branch" "$target_merged" >&2
+    if [[ "$target_merged" == "yes" ]]; then
+      if ! git branch -d "$target_branch" >&2; then
+        warn "Failed to delete merged branch: $target_branch"
+        fails=$((fails + 1))
+        continue
+      fi
+    else
+      printf 'Branch %s is not merged into %s; deleting with git branch -D\n' "$target_branch" "$main_branch" >&2
+      if ! git branch -D "$target_branch" >&2; then
+        warn "Failed to force delete unmerged branch: $target_branch"
+        fails=$((fails + 1))
+        continue
+      fi
+    fi
+
+    if [[ "$target_kind" == "worktree" ]]; then
+      printf 'Deleted worktree and branch: %s (%s, %s)\n' "$target_branch" "$target_path" "$target_merged" >&2
+    else
+      printf 'Deleted branch: %s (%s)\n' "$target_branch" "$target_merged" >&2
+    fi
+  done
+
+  if (( fails > 0 )); then
+    warn "Completed with $fails failure(s) out of $total"
+    return 1
   fi
 }
 
