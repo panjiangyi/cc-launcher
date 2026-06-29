@@ -1124,6 +1124,7 @@ list_deletable_worktrees() {
   DELETE_BRANCHES=()
   DELETE_KINDS=()
   DELETE_MERGED=()
+  DELETE_STALE=()
 
   local i
   for i in "${!WT_PATHS[@]}"; do
@@ -1132,13 +1133,28 @@ list_deletable_worktrees() {
 
     [[ "$path" == "$repo_root" ]] && continue
     [[ "$branch" == "[detached HEAD]" ]] && continue
-    [[ ! -d "$path" ]] && continue
 
+    # Stale worktree: directory gone but git reference remains
+    if [[ ! -d "$path" ]]; then
+      DELETE_PATHS+=("$path")
+      DELETE_BRANCHES+=("$branch")
+      DELETE_KINDS+=("worktree")
+      DELETE_STALE+=("yes")
+      if branch_merged_into_main_branch "$branch"; then
+        DELETE_MERGED+=("yes")
+      else
+        DELETE_MERGED+=("no")
+      fi
+      continue
+    fi
+
+    # Active worktree: must be clean to be deletable
     is_clean_worktree "$path" || continue
 
     DELETE_PATHS+=("$path")
     DELETE_BRANCHES+=("$branch")
     DELETE_KINDS+=("worktree")
+    DELETE_STALE+=("no")
     if branch_merged_into_main_branch "$branch"; then
       DELETE_MERGED+=("yes")
     else
@@ -1154,6 +1170,7 @@ list_deletable_worktrees() {
     DELETE_PATHS+=("")
     DELETE_BRANCHES+=("$branch")
     DELETE_KINDS+=("branch")
+    DELETE_STALE+=("no")
     if branch_merged_into_main_branch "$branch"; then
       DELETE_MERGED+=("yes")
     else
@@ -1180,10 +1197,12 @@ delete_worktree() {
   for i in "${!DELETE_PATHS[@]}"; do
     local status_label="unmerged"
     [[ "${DELETE_MERGED[$i]}" == "yes" ]] && status_label="merged"
+    local stale_label=""
+    [[ "${DELETE_STALE[$i]}" == "yes" ]] && stale_label="stale "
     if [[ "${DELETE_KINDS[$i]}" == "worktree" ]]; then
-      menu_options+=("worktree | $status_label | ${DELETE_BRANCHES[$i]} | ${DELETE_PATHS[$i]}")
+      menu_options+=("worktree | ${stale_label}${status_label} | ${DELETE_BRANCHES[$i]} | ${DELETE_PATHS[$i]}")
     else
-      menu_options+=("branch | $status_label | ${DELETE_BRANCHES[$i]}")
+      menu_options+=("branch | ${stale_label}${status_label} | ${DELETE_BRANCHES[$i]}")
     fi
   done
 
@@ -1195,7 +1214,7 @@ delete_worktree() {
 
   local total=0
   local fails=0
-  local choice idx target_path target_branch target_kind target_merged
+  local choice idx target_path target_branch target_kind target_merged target_stale
   for choice in "${choices[@]}"; do
     total=$((total + 1))
     idx=$((choice - 1))
@@ -1203,22 +1222,31 @@ delete_worktree() {
     target_branch="${DELETE_BRANCHES[$idx]}"
     target_kind="${DELETE_KINDS[$idx]}"
     target_merged="${DELETE_MERGED[$idx]}"
+    target_stale="${DELETE_STALE[$idx]}"
 
     if [[ "$target_kind" == "worktree" ]]; then
-      if [[ ! -d "$target_path" ]]; then
-        warn "Target path does not exist: $target_path"
-        fails=$((fails + 1))
-        continue
-      fi
-      if ! is_clean_worktree "$target_path"; then
-        warn "Worktree has uncommitted changes; skipping: $target_path"
-        fails=$((fails + 1))
-        continue
-      fi
-      if ! git worktree remove "$target_path" >&2; then
-        warn "Failed to delete worktree: $target_path"
-        fails=$((fails + 1))
-        continue
+      if [[ "$target_stale" == "yes" ]]; then
+        if ! git worktree prune --verbose >&2; then
+          warn "Failed to prune stale worktrees"
+          fails=$((fails + 1))
+          continue
+        fi
+      else
+        if [[ ! -d "$target_path" ]]; then
+          warn "Target path does not exist: $target_path"
+          fails=$((fails + 1))
+          continue
+        fi
+        if ! is_clean_worktree "$target_path"; then
+          warn "Worktree has uncommitted changes; skipping: $target_path"
+          fails=$((fails + 1))
+          continue
+        fi
+        if ! git worktree remove "$target_path" >&2; then
+          warn "Failed to delete worktree: $target_path"
+          fails=$((fails + 1))
+          continue
+        fi
       fi
     else
       if ! git_branch_exists_local "$target_branch"; then
@@ -1249,7 +1277,11 @@ delete_worktree() {
     fi
 
     if [[ "$target_kind" == "worktree" ]]; then
-      printf 'Deleted worktree and branch: %s (%s, %s)\n' "$target_branch" "$target_path" "$target_merged" >&2
+      if [[ "$target_stale" == "yes" ]]; then
+        printf 'Deleted stale worktree and branch: %s (%s)\n' "$target_branch" "$target_merged" >&2
+      else
+        printf 'Deleted worktree and branch: %s (%s, %s)\n' "$target_branch" "$target_path" "$target_merged" >&2
+      fi
     else
       printf 'Deleted branch: %s (%s)\n' "$target_branch" "$target_merged" >&2
     fi
