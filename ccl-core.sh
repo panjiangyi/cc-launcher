@@ -653,6 +653,15 @@ ensure_project_config() {
   warn "Main branch: $main_branch"
 }
 
+execute_setup_script() {
+  local worktree_path="$1"
+  local setup_script="$worktree_repo_dir/setup.sh"
+
+  # Stdout from ccl-core is reserved for the shell snippet consumed by ccl-shell.
+  # Route setup script output to stderr so it stays visible without being eval'd.
+  (cd "$worktree_path" && bash "$setup_script" >&2)
+}
+
 run_setup_script() {
   local worktree_path="$1"
   local setup_script="$worktree_repo_dir/setup.sh"
@@ -664,9 +673,7 @@ run_setup_script() {
 
   warn "Running setup script..."
   local setup_rc=0
-  # Stdout from ccl-core is reserved for the shell snippet consumed by ccl-shell.
-  # Route setup script output to stderr so it stays visible without being eval'd.
-  (cd "$worktree_path" && bash "$setup_script" >&2) || setup_rc=$?
+  execute_setup_script "$worktree_path" || setup_rc=$?
 
   if [[ $setup_rc -ne 0 ]]; then
     warn "Setup script failed (exit code: $setup_rc), but the worktree was kept"
@@ -674,6 +681,26 @@ run_setup_script() {
     warn "Setup script completed successfully"
   fi
   return 0
+}
+
+run_setup_command() {
+  ensure_repo_context
+
+  local setup_script="$worktree_repo_dir/setup.sh"
+  if [[ ! -f "$setup_script" ]]; then
+    die "Setup script not found: $setup_script
+Create or edit it with: ccl setup --edit"
+  fi
+
+  warn "Running setup script ($repo_name) in: $current_worktree_root"
+  local setup_rc=0
+  execute_setup_script "$current_worktree_root" || setup_rc=$?
+
+  if [[ $setup_rc -ne 0 ]]; then
+    warn "Setup script failed (exit code: $setup_rc)"
+    exit "$setup_rc"
+  fi
+  warn "Setup script completed successfully"
 }
 
 edit_setup_script() {
@@ -1298,9 +1325,10 @@ show_help() {
 Usage: ccl [command]
 
 Commands:
-  setup    Create or edit the project-level setup script
-  init     Print shell integration script (supports zsh/bash)
-  help     Show this help message
+  setup          Run the project setup script in the current worktree
+  setup --edit   Create or edit the project-level setup script
+  init           Print shell integration script (supports zsh/bash)
+  help           Show this help message
 
 Run without arguments to open the interactive menu:
   - New task
@@ -1310,7 +1338,7 @@ Run without arguments to open the interactive menu:
 
 The setup script lives at ~/.worktrees/<repo-name>/setup.sh
 Project config lives at ~/.worktrees/<repo-name>/config.json
-setup.sh runs automatically after creating a new worktree; on first run the tool asks for the main branch and writes config.json.
+setup.sh runs automatically after creating a new worktree, and `ccl setup` runs it again in the current worktree from any directory inside the repository or one of its worktrees; on first run the tool asks for the main branch and writes config.json.
 EOF
 }
 
@@ -1325,10 +1353,11 @@ print_shell_init() {
 
   cat <<'EOF'
 ccl() {
-  local output target_path launch_tool
+  local output target_path launch_tool rc=0
 
-  if ! output="$(command ccl "$@")"; then
-    return $?
+  output="$(command ccl "$@")" || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    return "$rc"
   fi
 
   eval "$output"
@@ -1361,8 +1390,21 @@ main() {
   if [[ $# -gt 0 ]]; then
     case "$1" in
       setup)
-        ensure_project_config || exit 1
-        edit_setup_script
+        if [[ $# -gt 2 ]]; then
+          die "Usage: ccl setup [--edit]"
+        fi
+        case "${2:-}" in
+          "")
+            run_setup_command
+            ;;
+          --edit|-e|edit)
+            ensure_project_config || exit 1
+            edit_setup_script
+            ;;
+          *)
+            die "Usage: ccl setup [--edit]"
+            ;;
+        esac
         ;;
       init)
         [[ $# -eq 2 ]] || die "Usage: ccl init <zsh|bash>"

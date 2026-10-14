@@ -14,7 +14,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "bash ./scripts/test-worktree-root.sh && bash ./scripts/test-merged-branch-detection.sh && bash ./scripts/test-existing-branch-worktree.sh",
+    "test": "bash ./scripts/test-worktree-root.sh && bash ./scripts/test-merged-branch-detection.sh && bash ./scripts/test-existing-branch-worktree.sh && bash ./scripts/test-setup-command.sh",
     "pack:dry-run": "npm pack --dry-run",
     "release": "bash ./scripts/release.sh"
   },

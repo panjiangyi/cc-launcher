@@ -8,8 +8,10 @@ ccl() {
     return 1
   fi
 
-  if ! output="$("$script" "$@")"; then
-    return $?
+  local rc=0
+  output="$("$script" "$@")" || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    return "$rc"
   fi
 
   eval "$output"

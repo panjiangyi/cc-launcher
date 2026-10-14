@@ -52,9 +52,10 @@ Interactive capabilities:
 
 Setup command:
 
-- Run `ccl setup` to create or edit the project-level setup script
+- Run `ccl setup` from any directory inside the repository or one of its worktrees to execute the setup script in the current worktree
+- Run `ccl setup --edit` to create or edit the project-level setup script
 - The script is stored at `~/.worktrees/<repo-name>/setup.sh`
-- It runs automatically after a new worktree is created, which is useful for steps like installing dependencies or copying `.env` files
+- It also runs automatically after a new worktree is created, which is useful for steps like installing dependencies or copying `.env` files
 
 ## Development
 

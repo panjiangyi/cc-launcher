@@ -52,6 +52,7 @@ ccl
 
 Setup 命令：
 
-- 运行 `ccl setup` 可创建或编辑项目级 setup 脚本
+- 在仓库或任意 worktree 的子目录中运行 `ccl setup`，即可在当前 worktree 中执行 setup 脚本
+- 运行 `ccl setup --edit` 可创建或编辑项目级 setup 脚本
 - 脚本保存在 `~/.worktrees/<repo-name>/setup.sh`
-- 每次创建新的 worktree 后，这个脚本都会自动执行，适合用来安装依赖或复制 `.env` 文件
+- 每次创建新的 worktree 后，这个脚本也会自动执行，适合用来安装依赖或复制 `.env` 文件
